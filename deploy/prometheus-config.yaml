@@ -1,31 +1,409 @@
-kind: ConfigMap
 apiVersion: v1
-metadata:
-  name: prometheus-config
 data:
-  prometheus.yml: |-
+  base-alerting-rule.yml: |
+    groups:
+  base-recording-rule.yml: |
+    groups:
+    - name: namespace.applications
+      rules:
+      - record: namespace:deployment_pods
+        expr: |
+          label_join(kube_pod_owner{owner_kind="ReplicaSet"},  "replicaset", ",", "owner_name") * on(namespace, replicaset)  group_left(owner_name,owner_kind) kube_replicaset_owner{owner_kind="Deployment"}
+      - record: namespace:statefulset_pods
+        expr: |
+          kube_pod_owner{owner_kind="StatefulSet"}
+      - record: namespace:cronjob_pods
+        expr: |
+          label_join(kube_pod_owner{owner_kind="Job"},"job_name",",","owner_name") * on(job_name) group_left(owner_kind, owner_name) kube_job_owner{owner_kind="CronJob"}
+      - record: namespace:daemonset_pods
+        expr: |
+          kube_pod_owner{owner_kind="DaemonSet"}
+      ### deployments
+      - record: namespace:deployment_limits_memory_bytes:list
+        expr: |
+          sum by (namespace, owner_kind, owner_name) (label_join(kube_pod_owner{owner_kind="ReplicaSet"},  "replicaset", ",", "owner_name") * on(namespace, replicaset)  group_left(owner_name,owner_kind) kube_replicaset_owner{owner_kind="Deployment"} * on(namespace,pod) group_left() sum(kube_pod_container_resource_limits_memory_bytes{}) by (namespace,pod))
+      - record: namespace:deployment_limits_cpu_cores:list
+        expr: |
+          sum by (namespace, owner_kind, owner_name) (label_join(kube_pod_owner{owner_kind="ReplicaSet"},  "replicaset", ",", "owner_name") * on(namespace, replicaset)  group_left(owner_name,owner_kind) kube_replicaset_owner{owner_kind="Deployment"} * on(namespace,pod) group_left() sum(kube_pod_container_resource_limits_cpu_cores{}) by (namespace,pod))
+      ### sts
+      - record: namespace:statefulset_limits_memory_bytes:list
+        expr: |
+          sum by (namespace, owner_kind, owner_name) (kube_pod_owner{owner_kind="StatefulSet"} * on(namespace,pod) group_right(owner_name,owner_kind) (sum (kube_pod_container_resource_limits_memory_bytes{}) by (namespace,pod)))
+      - record: namespace:statefulset_limits_cpu_cores:list
+        expr: |
+          sum by (namespace, owner_kind, owner_name) (kube_pod_owner{owner_kind="StatefulSet"} * on(namespace,pod) group_right(owner_name,owner_kind) (sum (kube_pod_container_resource_limits_cpu_cores{}) by (namespace,pod)))
+      ### cronjob
+      - record: namespace:cronjob_limits_memory_bytes:list
+        expr: |
+          sum by (namespace, owner_kind, owner_name) (label_join(kube_pod_owner{owner_kind="Job"},"job_name",",","owner_name") * on(job_name) group_left(owner_kind, owner_name) kube_job_owner{owner_kind="CronJob"} * on(namespace,pod) group_right(owner_name,owner_kind) (sum (kube_pod_container_resource_limits_memory_bytes{} unless on(namespace,pod) kube_pod_completion_time{}) by (namespace,pod)))
+      - record: namespace:cronjob_limits_cpu_cores:list
+        expr: |
+          sum by (namespace, owner_kind, owner_name) (label_join(kube_pod_owner{owner_kind="Job"},"job_name",",","owner_name") * on(job_name) group_left(owner_kind, owner_name) kube_job_owner{owner_kind="CronJob"} * on(namespace,pod) group_right(owner_name,owner_kind) (sum (kube_pod_container_resource_limits_cpu_cores{} unless on(namespace,pod) kube_pod_completion_time{}) by (namespace,pod)))
+      ### daemonset
+      - record: namespace:daemonset_limits_memory_bytes:list
+        expr: |
+          sum by (namespace, owner_kind, owner_name) (kube_pod_owner{owner_kind="DaemonSet"} * on(namespace,pod) group_left() (sum (kube_pod_container_resource_limits_memory_bytes{}) by (namespace,pod)))
+      - record: namespace:daemonset_limits_cpu_cores:list
+        expr: |
+          sum by (namespace, owner_kind, owner_name) (kube_pod_owner{owner_kind="DaemonSet"} * on(namespace,pod) group_left() (sum (kube_pod_container_resource_limits_cpu_cores{}) by (namespace,pod)))
+    - name: namespaces
+      rules:
+      - record: namespace:limits_cpu_cores:sort_desc
+        expr: |
+          sort_desc(sum (kube_pod_container_resource_limits_cpu_cores{} unless on(namespace,pod) kube_pod_completion_time{}) by (namespace))
+      - record:  namespace:limits_memory_bytes:sort_desc
+        expr: |
+          sort_desc(sum (kube_pod_container_resource_limits_memory_bytes{} unless on(namespace,pod) kube_pod_completion_time{}) by (namespace))
+  base-alerting-rule.yml: |
+    groups:
+    - name: kubernetes Alerts
+      rules:
+      - alert: Node ready
+        expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          kind: node
+          category: k8s
+        annotations:
+          summary: node({{ $labels.node }}) 处于 NotReady 状态, 请立即核查
+          description: (cluster:prod) node({{ $labels.node }}) 处于 NotReady 状态,请立即核查, 避免大面积的pod漂移,引起应用震荡, 严重时,可能会导致集群雪崩, 排查思路是检查此节点是否有内存/磁盘/cpu 压力, 然后检查此节点上的大资源消耗的应用
+      - alert: JobFailed
+        expr: kube_job_status_failed > 0
+        for: 5m
+        labels:
+          severity: warning
+          kind: job
+          category: k8s
+        annotations:
+          summary: job({{ $labels.namespace }}/{{ $labels.job_name }}) 未能正常完成工作
+          description: (cluster:prod) job({{ $labels.namespace }}/{{ $labels.job_name }}) 未能正常完成工作, 请检查此job管控的pod 是否正常执行,请查看Events或者job。
+      - alert: PodNotHealthy
+        expr: min_over_time(sum by (namespace, pod) (kube_pod_status_phase{phase=~"Pending|Unknown|Failed"})[1h:]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          kind: pod
+          category: k8s
+        annotations:
+          summary: Pod({{ $labels.namespace }}/{{ $labels.pod }}) 处于未就绪状态已经超过1h了
+          description: (cluster:prod) Pod({{ $labels.namespace }}/{{ $labels.pod }}) 处于未就绪状态已经超过1h了,pod 可能处于 Pending|Unknown|Failed, 处于此状态有许多原因, 请检查集群调度状态是否足够, 依赖资源是否创建等问题。
+      - alert: PodCrashLooping
+        expr: rate(kube_pod_container_status_restarts_total[15m]) * 60 * 5 >0
+        for: 5m
+        labels:
+          severity: warning
+          kind: pod
+          category: k8s
+        annotations:
+          summary: pod({{ $labels.namespace }}/{{ $labels.pod }}) 在15m中被重启过
+          description: (cluster:prod) pod({{ $labels.namespace }}/{{ $labels.pod }}) 在15m分钟内被重启过, 平均每5分钟被重启 {{ $value }} 次, 重启值越高(value>1),说明pod 刚发生重启, 重启值越低(value<1), 说明pod 长时间不可用,请清除.
+      - alert: PodOOMKilled
+        expr: changes(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}[5m])>0
+        for: 5m
+        labels:
+          severity: critical
+          kind: pod
+          category: k8s
+        annotations:
+          summary:  pod({{ $labels.namespace }}/{{ $labels.pod }}) 在5分钟内因为OOMKilled被重启
+          description: (cluster:prod) pod({{ $labels.namespace }}/{{ $labels.pod }}) 在5分钟内因为OOMKilled被重启, 5分钟内因 OOMKilled 重启 {{ $value }} 次.
+      - alert: Job failed to complete
+        expr: kube_job_spec_completions - kube_job_status_succeeded > 0 or kube_job_status_failed > 0
+        for: 5m
+        labels:
+          severity: critical
+          kind: job
+          category: k8s
+        annotations:
+          summary: job({{ $labels.namespace }}/{{ $labels.job_name }})未按预期执行任务或任务执行失败
+          description: (cluster:prod) job({{ $labels.namespace }}/{{ $labels.job_name }})未按预期执行任务或任务执行失败, job期望完成值和成功执行的pod数不一致,或者job执行失败, 请检查, 如确认没有问题,请移除失败的job, 避免重复告警.
+  bc-recording-rule.yml: |
+    groups:
+  prometheus.yml: |
     global:
-      scrape_interval: 15s
+      scrape_interval:     15s
       evaluation_interval: 15s
       external_labels:
-        cluster: custom
+        cluster: prod
+    rule_files:
+    - /etc/config/base-recording-rule.yml
+    - /etc/config/base-alerting-rule.yml
+    # business configs
+    - /etc/config/bc-recording-rule.yml
+    - /etc/config/bc-alerting-rule.yml
+    alerting:
+      alertmanagers:
+        - static_configs:
+          - targets: ["alertmanager.kubestar-monitor"]
     scrape_configs:
-    - job_name: 'metrics-test'
+    - job_name: prometheus-server
+      honor_labels: false
+      static_configs:
+        - targets: ["localhost:9090"]
+    # 节点监控(node-exporter,cadvisor,kubelet)
+    - job_name: node-exporter
+      honor_labels: false
       kubernetes_sd_configs:
-        - role: pod
+      - role: endpoints
+        namespaces:
+          names:
+          - kubestar-monitor
+      scheme: http
+      relabel_configs:
+      - source_labels:
+        - __meta_kubernetes_pod_controller_kind
+        - __meta_kubernetes_pod_controller_name
+        regex: DaemonSet;node-exporter
+        action: keep
+      - source_labels:
+        - __meta_kubernetes_endpoint_node_name
+        target_label: node
+        replacement: ${1}
+    - job_name: standard-cadvisor
+      honor_labels: false
+      kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+          - kubestar-monitor
+      scheme: http
+      relabel_configs:
+      - action: keep
+        source_labels:
+        - __meta_kubernetes_service_label_name
+        regex: cadvisor
+      - action: keep
+        source_labels:
+        - __meta_kubernetes_endpoint_port_name
+        regex: http
+      - source_labels:
+        - __meta_kubernetes_endpoint_address_target_kind
+        - __meta_kubernetes_endpoint_address_target_name
+        separator: ;
+        regex: Pod;(.*)
+        replacement: ${1}
+        target_label: pod
+      - source_labels:
+        - __meta_kubernetes_endpoint_node_name
+        target_label: node
+        replacement: ${1}
+      metric_relabel_configs:
+      - source_labels: [ __name__ ]
+        regex: 'container_network_tcp_usage_total'
+        action: keep
+      - source_labels:
+        - container_label_io_kubernetes_pod_name
+        target_label: pod
+      - source_labels:
+        - container_label_io_kubernetes_container_name
+        target_label: container
+      - source_labels:
+        - container_label_io_kubernetes_pod_namespace
+        target_label: namespace
+      - regex: container_label_io_kubernetes_pod_namespace
+        action: labeldrop
+      - regex: container_label_io_kubernetes_container_name
+        action: labeldrop
+      - regex: container_label_io_kubernetes_pod_name
+        action: labeldrop
+    - job_name: cadvisor
+      honor_timestamps: true
+      scrape_interval: 15s
+      scrape_timeout: 10s
+      metrics_path: /metrics
+      scheme: https
+      kubernetes_sd_configs:
+      - role: node
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
       tls_config:
         ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        insecure_skip_verify: true
       relabel_configs:
-      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
-        regex: metrics
-        action: keep
-      - source_labels: [__meta_kubernetes_pod_ip]
-        action: replace
-        regex: (.*)
-        replacement: ${1}:9091
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - replacement: kubernetes.default.svc:443
         target_label: __address__
+      - regex: (.+)
+        replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+        source_labels:
+        - __meta_kubernetes_node_name
+        target_label: __metrics_path__
+      metric_relabel_configs:
+      - regex: pod_name
+        action: labeldrop
+      - regex: container_name
+        action: labeldrop
       - source_labels:
-        - __meta_kubernetes_pod_name
-        target_label: pod
-
+        - instance
+        target_label: node
+    - job_name: kubelet
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+      - role: node
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - replacement: kubernetes.default.svc:443
+        target_label: __address__
+      - regex: (.+)
+        replacement: /api/v1/nodes/$1/proxy/metrics
+        source_labels:
+        - __meta_kubernetes_node_name
+        target_label: __metrics_path__
+      - source_labels:
+        - instance
+        target_label: node
+    #  kubernetes 元数据采集
+    - job_name: kube-state-metrics
+      kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+          - kubestar-monitor
+      scheme: http
+      relabel_configs:
+      - source_labels:
+        - __meta_kubernetes_endpoints_name
+        regex: kube-state-metrics
+        action: keep
+    # kubernetes master 组件监控
+    - job_name: kube-dns
+      honor_labels: false
+      kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+          - kube-system
+      scheme: http
+      relabel_configs:
+      - source_labels:
+        - __meta_kubernetes_endpoints_name
+        - __meta_kubernetes_pod_container_port_number
+        regex: kube-dns;9153
+        action: keep
+    - job_name: kube-apiserver
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+      kubernetes_sd_configs:
+      - role: endpoints
+      relabel_configs:
+      - action: keep
+        source_labels:
+        - __meta_kubernetes_namespace
+        - __meta_kubernetes_service_name
+        - __meta_kubernetes_endpoint_port_name
+        regex: default;kubernetes;https
+    - job_name: kube-services-whitebox
+      metrics_path: /metric
+      kubernetes_sd_configs:
+      - role: service
+      relabel_configs:
+      # service 指定 prometheus.io/http_metric=true  才能做服务发现
+      - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_http_metric]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_namespace, __meta_kubernetes_service_annotation_prometheus_io_http_metric_port]
+        action: replace
+        target_label: instance
+        regex: (.+);(.+);(.+)
+        replacement: $1.$2:$3
+      - target_label: __address__
+        source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_namespace, __meta_kubernetes_service_annotation_prometheus_io_http_metric_port]
+        action: replace
+        regex: (.+);(.+);(.+)
+        replacement: $1.$2:$3
+      - target_label: __scheme__
+        source_labels: [__meta_kubernetes_service_annotation_prometheus_io_http_metric_scheme]
+      - target_label: __metrics_path__
+        source_labels: [__meta_kubernetes_service_annotation_prometheus_io_http_metric_path]
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_service_name]
+        target_label: name
+      - action: labelmap
+        regex: __meta_kubernetes_service_annotation_prometheus_io_http_metric_params_(.*)
+        replacement: __param_${1}
+    # dns blackbox config
+    - job_name: kube-dns-blackbox
+      metrics_path: /probe
+      params:
+        module: [dns]
+      static_configs:
+      - targets:
+        - kube-dns.kube-system:53
+      relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+    # kubernetes service blackbox
+    - job_name: kube-services-blackbox
+      metrics_path: /probe
+      params:
+        module: [http_2xx] # 使用get模块,且返回200
+      kubernetes_sd_configs:
+      - role: service
+      relabel_configs:
+      # service 指定 prometheus.io/http_probe=true  才能做服务发现
+      - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_http_probe]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_namespace, __meta_kubernetes_service_annotation_prometheus_io_http_probe_port, __meta_kubernetes_service_annotation_prometheus_io_http_probe_path]
+        action: replace
+        target_label: __param_target
+        regex: (.+);(.+);(.+);(.+)
+        replacement: $1.$2:$3$4
+      - target_label: __address__
+        replacement: blackbox:9115
+      - source_labels: [__param_target]
+        target_label: instance
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_service_name]
+        target_label: name
+      - action: labelmap
+        regex: __meta_kubernetes_service_annotation_prometheus_io_http_probe_params_(.*)
+        replacement: __param_${1}
+      # kubernetes ingress blackbox
+    - job_name: kube-ingresses-blackbox
+      metrics_path: /probe
+      params:
+        module: [http_2xx]
+      kubernetes_sd_configs:
+      - role: ingress  # ingress type
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_ingress_annotation_prometheus_io_http_probe]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_ingress_scheme,__address__,__meta_kubernetes_ingress_path]
+        regex: (.+);(.+);(.+)
+        replacement: ${1}://${2}${3}
+        target_label: __param_target
+      - target_label: __address__
+        replacement: blackbox:9115
+      - source_labels: [__param_target]
+        target_label: instance
+      - action: labelmap
+        regex: __meta_kubernetes_ingress_annotation_prometheus_io_http_probe_params_(.*)
+        replacement: __param_${1} 
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_ingress_name]
+        target_label: name
+kind: ConfigMap
+metadata:
+  annotations:
+  labels:
+    app: prometheus-server
+  name: prometheus-config
+  namespace: kubestar-monitor

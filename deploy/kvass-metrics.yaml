@@ -4,6 +4,7 @@ metadata:
   labels:
     app.kubernetes.io/name: metrics
   name: metrics
+  namespace: kubestar-monitor
 spec:
   progressDeadlineSeconds: 600
   replicas: 6
