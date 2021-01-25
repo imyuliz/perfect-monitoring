@@ -4,7 +4,7 @@ metadata:
   labels:
     app.kubernetes.io/name: thanos-rule
   name: thanos-rule
-  namespace: thanos
+  namespace: kubestar-monitor
 spec:
   clusterIP: None
   ports:
@@ -23,7 +23,7 @@ metadata:
   labels:
     app.kubernetes.io/name: thanos-rule
   name: thanos-rule
-  namespace: thanos
+  namespace: kubestar-monitor
 spec:
   replicas: 2
   selector:
@@ -42,11 +42,11 @@ spec:
         - --grpc-address=0.0.0.0:10901
         - --http-address=0.0.0.0:10902
         - --rule-file=/etc/thanos/rules/*rules.yaml
-        - --objstore.config-file=/etc/thanos/objectstorage.yaml
+        # - --objstore.config-file=/etc/thanos/objectstorage.yaml
         - --data-dir=/var/thanos/rule
         - --label=rule_replica="$(NAME)"
         - --alert.label-drop="rule_replica"
-        - --query=dnssrv+_http._tcp.thanos-query.thanos.svc.cluster.local
+        - --query=dnssrv+_http._tcp.thanos-query.kubestar-monitor.svc.cluster.local
         env:
         - name: NAME
           valueFrom:
@@ -85,20 +85,6 @@ spec:
         - name: thanos-rules
           mountPath: /etc/thanos/rules
       volumes:
-      - name: thanos-objectstorage
-        secret:
-          secretName: thanos-objectstorage
       - name: thanos-rules
         configMap:
           name: thanos-rules
-  volumeClaimTemplates:
-  - metadata:
-      labels:
-        app.kubernetes.io/name: thanos-rule
-      name: data
-    spec:
-      accessModes:
-      - ReadWriteOnce
-      resources:
-        requests:
-          storage: 100Gi

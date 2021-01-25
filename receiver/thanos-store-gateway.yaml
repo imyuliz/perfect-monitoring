@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: thanos-store
-  namespace: thanos
+  namespace: kubestar-monitor
   labels:
     app.kubernetes.io/name: thanos-store
 spec:
@@ -44,7 +44,7 @@ spec:
         - --data-dir=/var/thanos/store
         - --grpc-address=0.0.0.0:10901
         - --http-address=0.0.0.0:10902
-        - --objstore.config-file=/etc/thanos/objectstorage.yaml
+        # - --objstore.config-file=/etc/thanos/objectstorage.yaml
         - --experimental.enable-index-header
         image: thanosio/thanos:v0.16.0-rc.1
         livenessProbe:
@@ -76,18 +76,3 @@ spec:
           subPath: objectstorage.yaml
           mountPath: /etc/thanos/objectstorage.yaml
       terminationGracePeriodSeconds: 120
-      volumes:
-      - name: thanos-objectstorage
-        secret:
-          secretName: thanos-objectstorage
-  volumeClaimTemplates:
-  - metadata:
-      labels:
-        app.kubernetes.io/name: thanos-store
-      name: data
-    spec:
-      accessModes:
-      - ReadWriteOnce
-      resources:
-        requests:
-          storage: 10Gi

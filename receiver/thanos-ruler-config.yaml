@@ -4,7 +4,7 @@ metadata:
   name: thanos-rules
   labels:
     name: thanos-rules
-  namespace: thanos
+  namespace: kubestar-monitor
 data:
   record.rules.yaml: |-
     groups:

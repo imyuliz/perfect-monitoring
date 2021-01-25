@@ -4,7 +4,7 @@ metadata:
   labels:
     app.kubernetes.io/name: thanos-compact
   name: thanos-compact
-  namespace: thanos
+  namespace: kubestar-monitor
 spec:
   ports:
   - name: http
@@ -20,7 +20,7 @@ metadata:
   labels:
     app.kubernetes.io/name: thanos-compact
   name: thanos-compact
-  namespace: thanos
+  namespace: kubestar-monitor
 spec:
   replicas: 1
   selector:
@@ -36,7 +36,7 @@ spec:
       - args:
         - compact
         - --wait
-        - --objstore.config-file=/etc/thanos/objectstorage.yaml
+        # - --objstore.config-file=/etc/thanos/objectstorage.yaml
         - --data-dir=/var/thanos/compact
         - --debug.accept-malformed-index
         - --log.level=debug
@@ -67,14 +67,7 @@ spec:
         - mountPath: /var/thanos/compact
           name: data
           readOnly: false
-        - name: thanos-objectstorage
-          subPath: objectstorage.yaml
-          mountPath: /etc/thanos/objectstorage.yaml
       terminationGracePeriodSeconds: 120
-      volumes:
-      - name: thanos-objectstorage
-        secret:
-          secretName: thanos-objectstorage
   volumeClaimTemplates:
   - metadata:
       labels:
